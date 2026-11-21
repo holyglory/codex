@@ -85,7 +85,9 @@ install:
 # there should be no need to add `--all-features`.
 [unix]
 test *args:
-    RUST_MIN_STACK={{ rust_min_stack }} NEXTEST_PROFILE=local cargo nextest run --no-fail-fast "$@"
+    # Cargo initializes Git and injects SSL_CERT_FILE before external subcommands.
+    # Start the same runner directly so TLS tests retain their selected roots.
+    RUST_MIN_STACK={{ rust_min_stack }} NEXTEST_PROFILE=local cargo-nextest nextest run --no-fail-fast "$@"
 
 [windows]
 test *args:

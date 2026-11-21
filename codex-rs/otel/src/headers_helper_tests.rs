@@ -238,7 +238,7 @@ async fn executable_paths_with_spaces_and_timeouts_are_supported() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("helper with spaces");
-    std::fs::write(
+    codex_utils_cargo_bin::write_executable(
         &path,
         "#!/bin/sh\nprintf '%s' '{\"Authorization\":\"token\"}'",
     )

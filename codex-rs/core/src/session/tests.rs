@@ -65,6 +65,26 @@ use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::WindowsSandboxModeToml;
 use core_test_support::test_codex::TurnInputRequest as ExternalTurnInputRequest;
 
+#[test]
+fn usage_metadata_preserves_exact_billing_and_rate_card_provenance() {
+    assert_eq!(super::parse_usd_micros("0.123456"), Some(123_456));
+    assert_eq!(super::parse_usd_micros("0.123456000"), Some(123_456));
+    assert_eq!(super::parse_usd_micros("0.1234567"), None);
+    let metadata = codex_protocol::ResponseUsageMetadata {
+        amount: Some("0.123456".into()),
+        metadata: Some(serde_json::json!({
+            "pricingBasis": "api_equivalent",
+            "rateCard": "openai-standard",
+            "rateCardVersion": "2026-11-15",
+            "estimatedApiEquivalentCostMicros": 987654,
+        })),
+    };
+    assert_eq!(
+        super::Session::actual_billing_micros(&metadata),
+        Some(123_456)
+    );
+}
+
 use codex_features::Feature;
 use codex_file_system::FileSystemSandboxContext;
 use codex_http_client::ClientRouteClass;
@@ -12771,7 +12791,11 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
     Arc::make_mut(&mut current.model_info).supports_image_detail_original = true;
     tc.next_step_settings.store(Arc::new(current));
 
-    sess.on_task_finished(Arc::clone(&tc), /*task_result*/ Ok(None))
+    let task_done = {
+        let active = sess.active_turn.lock().await;
+        Arc::clone(&active.as_ref().unwrap().task.as_ref().unwrap().done)
+    };
+    sess.on_task_finished(Arc::clone(&tc), &task_done, /*task_result*/ Ok(None))
         .await;
 
     let history = sess.clone_history().await;

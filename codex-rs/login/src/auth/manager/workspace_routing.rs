@@ -48,6 +48,14 @@ pub struct WorkspaceRoutingRequest {
 /// can be established; a cache miss is not evidence of an independent destination.
 /// Implementations must reject failed discovery and changes to the selected account.
 pub trait WorkspaceRoutingResolver: Send + Sync {
+    /// Bind discovery to a leased profile without retaining its authentication owner.
+    fn for_auth_manager(
+        self: Arc<Self>,
+        _manager: Weak<AuthManager>,
+    ) -> Option<Arc<dyn WorkspaceRoutingResolver>> {
+        None
+    }
+
     fn resolve(
         &self,
         request: WorkspaceRoutingRequest,

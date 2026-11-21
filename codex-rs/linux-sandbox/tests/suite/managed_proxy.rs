@@ -455,8 +455,11 @@ printf 'legacy proc fallback\n'
 
 #[tokio::test]
 async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
-    if option_env!("CODEX_BWRAP_SHA256")
-        .is_some_and(|digest| digest.chars().any(|character| character != '0'))
+    let has_bundled_fixture = codex_utils_cargo_bin::runfiles_available()
+        || std::env::var_os("CARGO_BIN_EXE_bwrap").is_some();
+    if !has_bundled_fixture
+        && option_env!("CODEX_BWRAP_SHA256")
+            .is_some_and(|digest| digest.chars().any(|character| character != '0'))
     {
         eprintln!("skipping system bwrap fallback test: bundled binaries require a release digest");
         return;
@@ -467,10 +470,14 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
         return;
     }
 
-    let Some(system_bwrap) = codex_sandboxing::find_system_bwrap_in_path(
+    let bundled_bwrap = if has_bundled_fixture {
+        cargo_bin("bwrap").expect("resolve the declared bundled bubblewrap")
+    } else if let Some(system_bwrap) = codex_sandboxing::find_system_bwrap_in_path(
         &PermissionProfile::read_only().file_system_sandbox_policy(),
         &std::env::current_dir().expect("current directory"),
-    ) else {
+    ) {
+        system_bwrap
+    } else {
         eprintln!("skipping system bwrap fallback test: no system bubblewrap is available");
         return;
     };
@@ -486,7 +493,7 @@ async fn unsupported_system_bwrap_falls_back_to_bundled_bwrap() {
 
     let resources_dir = tempdir.path().join("codex-resources");
     std::fs::create_dir(&resources_dir).expect("create bundled resource directory");
-    std::os::unix::fs::symlink(&system_bwrap, resources_dir.join("bwrap"))
+    codex_utils_cargo_bin::copy_executable(&bundled_bwrap, &resources_dir.join("bwrap"))
         .expect("install bundled bubblewrap");
 
     let system_dir = tempdir.path().join("system");

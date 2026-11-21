@@ -14,8 +14,9 @@ Scenario: Pre-turn compaction during model switch (without pre-sampling model-sw
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     BEFORE_SWITCH_USER
 
@@ -29,8 +30,9 @@ Scenario: Pre-turn compaction during model switch (without pre-sampling model-sw
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     BEFORE_SWITCH_USER
 04:message/assistant:

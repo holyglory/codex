@@ -203,13 +203,17 @@ Scenario: A host updates and clears shared instructions for surviving descendant
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user[2]:
-    [01] # AGENTS.md instructions
+02:message/user[3]:
+    [01] <usage_work_boundary>
+        A usage-work attribution boundary is missing. Resolve this boundary once before continuing. If authorita...changes, never per operation, retry, or context step. [hash=aa003ca356869e81]
+        Options: continue, select, new, clear, unknown.
+        </usage_work_boundary>
+    [02] # AGENTS.md instructions
 
         <INSTRUCTIONS>
         Ask before sending email.
         </INSTRUCTIONS>
-    [02] <environment_context>
+    [03] <environment_context>
           <cwd><CWD></cwd>
           <shell><HOST_SHELL></shell>
           <current_date><CURRENT_DATE></current_date>

@@ -11,6 +11,7 @@ use codex_api::AgentIdentityTelemetry;
 use codex_api::Provider;
 use codex_api::ReqwestTransport;
 use codex_api::SharedAuthProvider;
+use codex_api::auth_header_telemetry;
 use codex_features::RuntimeAuthMode;
 use codex_http_client::ClientRouteClass;
 use codex_http_client::HttpClientFactory;
@@ -24,6 +25,7 @@ use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::error::Result;
 use codex_runtime_agent_instance::RuntimeAuth;
 use codex_runtime_agent_instance::RuntimeAuthManager;
+use http::HeaderMap;
 use std::sync::Arc;
 
 /// Select auth for inference and discovery, letting rotating credentials finish saving
@@ -111,6 +113,17 @@ pub struct ResolvedProviderRequest {
 }
 
 impl ResolvedProviderRequest {
+    /// Reports resolved credential presence without refreshing or exposing credential values.
+    /// Account and routing selectors alone do not authenticate a request.
+    pub fn has_authentication(&self) -> bool {
+        let resolved_auth = if let Some(CodexAuth::Headers(auth)) = self.auth.as_ref() {
+            has_authentication_header(auth.headers())
+        } else {
+            auth_header_telemetry(self.api_auth.as_ref()).is_ok_and(|telemetry| telemetry.attached)
+        };
+        resolved_auth || has_authentication_header(&self.api_provider.headers)
+    }
+
     pub fn http_transport(&self, endpoint: &str) -> Result<ReqwestTransport> {
         let redirect_policy = if self
             .api_provider
@@ -131,6 +144,22 @@ impl ResolvedProviderRequest {
         .map_err(std::io::Error::from)?;
         Ok(ReqwestTransport::from_http_client(client))
     }
+}
+
+fn has_authentication_header(headers: &HeaderMap) -> bool {
+    [
+        "authorization",
+        "x-openai-actor-authorization",
+        "api-key",
+        "x-api-key",
+        "x-goog-api-key",
+    ]
+    .into_iter()
+    .any(|name| {
+        headers
+            .get(name)
+            .is_some_and(|value| !value.as_bytes().iter().all(u8::is_ascii_whitespace))
+    })
 }
 
 /// Resolve one attempt, including any workspace route, without mixing credential revisions.

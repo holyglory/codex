@@ -81,6 +81,116 @@ fn image_generation_extensions(
     Arc::new(extension_builder.build())
 }
 
+#[test_case("web", "run", "/v1/alpha/search"; "web search")]
+#[test_case("image_gen", "imagegen", "/v1/images/generations"; "image generation")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auxiliary_calls_require_auth_before_dispatch(
+    namespace: &str,
+    tool_name: &str,
+    endpoint: &str,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let server = responses::start_mock_server().await;
+    Mock::given(method("POST"))
+        .and(path(endpoint))
+        .respond_with(ResponseTemplate::new(/*s*/ 200))
+        .expect(/*r*/ 0)
+        .mount(&server)
+        .await;
+    // A manager and account-routing headers do not constitute a usable credential.
+    let auth = CodexAuth::Headers(codex_login::AuthHeaders::new(http::HeaderMap::from_iter([
+        (
+            http::HeaderName::from_static("chatgpt-account-id"),
+            http::HeaderValue::from_static("workspace"),
+        ),
+    ])));
+    let auth_manager = codex_core::test_support::auth_manager_from_auth(auth.clone());
+    let mut extensions = ExtensionRegistryBuilder::new();
+    install_image_generation_extension(&mut extensions, Arc::clone(&auth_manager), |_| None);
+    codex_web_search_extension::install(&mut extensions, auth_manager);
+    let arguments = if namespace == "web" {
+        json!({"search_query": [{"q": "test"}]})
+    } else {
+        json!({"prompt": "paint a blue whale"})
+    };
+    let script = vec![
+        responses::sse_response(responses::sse(vec![
+            responses::ev_function_call_with_namespace(
+                "aux",
+                namespace,
+                tool_name,
+                &arguments.to_string(),
+            ),
+            responses::ev_completed("tool"),
+        ])),
+        responses::sse_response(responses::sse(vec![
+            responses::ev_assistant_message("done", "Sign in to use the requested tool."),
+            responses::ev_completed("done"),
+        ])),
+    ];
+    let model = responses::mount_response_sequence(&server, script).await;
+    let test = test_codex()
+        .with_auth(auth)
+        .with_extensions(Arc::new(extensions.build()))
+        .with_config(|config| {
+            config
+                .features
+                .enable(Feature::StandaloneWebSearch)
+                .unwrap();
+            config.web_search_mode.set(WebSearchMode::Live).unwrap();
+        })
+        .build_with_auto_env(&server)
+        .await?;
+    test.codex
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Run the requested tool.".into(),
+            text_elements: Vec::new(),
+        }]))
+        .await?;
+    let expected = if namespace == "web" {
+        "authentication is required for web search"
+    } else {
+        "authentication is required for image generation"
+    };
+    let mut turn_failed = false;
+    wait_for_event(&test.codex, |event| {
+        if matches!(event, EventMsg::Error(_)) {
+            turn_failed = true;
+        }
+        if let EventMsg::TurnComplete(completed) = event {
+            turn_failed |= completed.error.is_some();
+        }
+        matches!(event, EventMsg::TurnComplete(_))
+    })
+    .await;
+    assert!(
+        !turn_failed,
+        "missing credentials must return a recoverable tool error"
+    );
+    let requests = model.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "the caller can continue after the tool error"
+    );
+    assert!(
+        requests[1]
+            .function_call_output("aux")
+            .to_string()
+            .contains(expected)
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .all(|request| request.url.path() != endpoint)
+    );
+    server.verify().await;
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn generated_image_ui_item_is_file_backed_in_rollout() -> Result<()> {
     skip_if_no_network!(Ok(()));

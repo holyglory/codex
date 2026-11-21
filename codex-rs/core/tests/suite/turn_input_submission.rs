@@ -748,8 +748,16 @@ async fn recover_turn_if_idle_preserves_id_and_resumes_plan_mode() {
     );
     let user_input_groups = request.message_input_text_groups("user");
     assert_eq!(user_input_groups.len(), 1);
-    assert_eq!(user_input_groups[0].len(), 1);
-    assert!(user_input_groups[0][0].starts_with("<environment_context>"));
+    assert_eq!(user_input_groups[0].len(), 2);
+    assert!(request.has_content_kinds(&[
+        "usage_work.boundary_prompt",
+        "environments.environment_context"
+    ]));
+    assert!(
+        user_input_groups[0][0].starts_with("<usage_work_boundary>")
+            && user_input_groups[0][0].ends_with("</usage_work_boundary>")
+    );
+    assert!(user_input_groups[0][1].starts_with("<environment_context>"));
 }
 
 #[derive(Default)]

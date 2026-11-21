@@ -1,5 +1,6 @@
 ---
 source: core/tests/suite/scenarios_agent_message_board.rs
+assertion_line: 236
 expression: "context_snapshot::format_context_snapshot(\"An active agent describes a channel, lists it, posts a shared decision and reads it without a self-notification.\",\n&bodies.iter().map(SnapshotEntry::body).collect::<Vec<_>>(),\n&ContextSnapshotOptions::default().rewrite_known_segments(),)"
 ---
 Scenario: An active agent describes a channel, lists it, posts a shared decision and reads it without a self-notification.
@@ -30,8 +31,9 @@ Scenario: An active agent describes a channel, lists it, posts a shared decision
     Full-history forks (`fork_turns` omitted or `"all"`) inherit the parent model and reasoning effort and d...uctions; when doing so, set `fork_turns` to `"none"`. [hash=18ccf7e93ecabab9]
 03:message/developer:
     <MULTI_AGENT_MODE>
-04:message/user:
-    <ENVIRONMENT_CONTEXT>
+04:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 05:message/user:
     Create and describe a design channel, list it, then post and read the decision.
 -- request 2 (request) --

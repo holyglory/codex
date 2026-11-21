@@ -14,12 +14,15 @@ Scenario: First request after fork when startup preserves the parent baseline, t
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     fork seed
 04:message/developer[2]:
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <COLLABORATION_MODE>
 05:message/user:
+    <USAGE_WORK_BOUNDARY>
+06:message/user:
     after fork

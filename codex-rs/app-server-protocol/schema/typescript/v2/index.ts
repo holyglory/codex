@@ -1,7 +1,14 @@
 // GENERATED CODE! DO NOT MODIFY BY HAND!
 
 export type { Account } from "./Account";
+export type { AccountAutoSelection } from "./AccountAutoSelection";
+export type { AccountAutoSelectionPolicy } from "./AccountAutoSelectionPolicy";
 export type { AccountLoginCompletedNotification } from "./AccountLoginCompletedNotification";
+export type { AccountPriorityOrder } from "./AccountPriorityOrder";
+export type { AccountProfile } from "./AccountProfile";
+export type { AccountProfileActiveChangedNotification } from "./AccountProfileActiveChangedNotification";
+export type { AccountProfileLogin } from "./AccountProfileLogin";
+export type { AccountProfileLoginMethodParams } from "./AccountProfileLoginMethodParams";
 export type { AccountRateLimitsUpdatedNotification } from "./AccountRateLimitsUpdatedNotification";
 export type { AccountRoutingOverride } from "./AccountRoutingOverride";
 export type { AccountSecuritySetupAction } from "./AccountSecuritySetupAction";
@@ -268,6 +275,21 @@ export type { ItemGuardianApprovalReviewStartedNotification } from "./ItemGuardi
 export type { ItemStartedNotification } from "./ItemStartedNotification";
 export type { ListMcpServerStatusParams } from "./ListMcpServerStatusParams";
 export type { ListMcpServerStatusResponse } from "./ListMcpServerStatusResponse";
+export type { LocalUsageAccountingCapability } from "./LocalUsageAccountingCapability";
+export type { LocalUsageBindingSnapshot } from "./LocalUsageBindingSnapshot";
+export type { LocalUsageBindingStatusParams } from "./LocalUsageBindingStatusParams";
+export type { LocalUsageBindingStatusResponse } from "./LocalUsageBindingStatusResponse";
+export type { LocalUsageBindingTransitionParams } from "./LocalUsageBindingTransitionParams";
+export type { LocalUsageBindingTransitionResponse } from "./LocalUsageBindingTransitionResponse";
+export type { LocalUsageCursor } from "./LocalUsageCursor";
+export type { LocalUsageOperationBinding } from "./LocalUsageOperationBinding";
+export type { LocalUsageRepositoryIdentityParams } from "./LocalUsageRepositoryIdentityParams";
+export type { LocalUsageRepositoryIdentityResponse } from "./LocalUsageRepositoryIdentityResponse";
+export type { LocalUsageSnapshot } from "./LocalUsageSnapshot";
+export type { LocalUsageSummaryParams } from "./LocalUsageSummaryParams";
+export type { LocalUsageSummaryResponse } from "./LocalUsageSummaryResponse";
+export type { LocalUsageWorkContext } from "./LocalUsageWorkContext";
+export type { LocalUsageWorkContextBinding } from "./LocalUsageWorkContextBinding";
 export type { LoginAccountParams } from "./LoginAccountParams";
 export type { LoginAccountResponse } from "./LoginAccountResponse";
 export type { LoginAppBrand } from "./LoginAppBrand";
@@ -361,6 +383,7 @@ export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
 export type { ModelVerification } from "./ModelVerification";
 export type { ModelVerificationNotification } from "./ModelVerificationNotification";
 export type { ModelsRequirements } from "./ModelsRequirements";
+export type { MultiAccountCapability } from "./MultiAccountCapability";
 export type { MultiAgentVersion } from "./MultiAgentVersion";
 export type { NetworkAccess } from "./NetworkAccess";
 export type { NetworkApprovalContext } from "./NetworkApprovalContext";

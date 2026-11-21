@@ -1848,7 +1848,7 @@ pub(crate) async fn request_mcp_tool_user_approval(
             decision: ReviewDecision::denied(
                 "MCP tool call requires approval, but approval policy is never",
             ),
-            source: ApprovalResolutionSource::User,
+            source: ApprovalResolutionSource::Policy,
             cancellation_reason: None,
         };
     }
@@ -1951,7 +1951,7 @@ pub(crate) async fn request_mcp_tool_user_approval(
                     "Ask the parent agent to handle this request. ",
                     "Do not retry the blocked action until the parent confirms the blocker is resolved."
                 )),
-                source: ApprovalResolutionSource::User,
+                source: ApprovalResolutionSource::Policy,
                 cancellation_reason: None,
             };
         }

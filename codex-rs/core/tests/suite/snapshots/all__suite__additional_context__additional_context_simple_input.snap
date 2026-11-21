@@ -14,8 +14,10 @@ Scenario: additional context is inserted before the user turn input.
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/developer:
+02:message/user:
+    <USAGE_WORK_BOUNDARY>
+03:message/developer:
     <automation_info>run one</automation_info>
-03:function_call_output/agent.browser_info:tab one
-04:message/user:
+04:function_call_output/agent.browser_info:tab one
+05:message/user:
     inspect the active tab

@@ -1,6 +1,5 @@
 ---
 source: core/tests/suite/scenarios_guardian_direct_mcp.rs
-assertion_line: 174
 expression: snapshot
 ---
 Scenario: A live MCP denial and a direct approval render the same action; neither dispatches the tool.
@@ -17,8 +16,9 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Use [$calendar](app://calendar) to create a lunch event.
 
@@ -109,8 +109,9 @@ Scenario: A live MCP denial and a direct approval render the same action; neithe
         - mcp__codex_apps__calendar: Plan events and manage your calendar.
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Use [$calendar](app://calendar) to create a lunch event.
 04:function_call/mcp__codex_apps__calendar._create_event:{"starts_at":"2026-03-10T12:00:00Z","title":"Lunch"}

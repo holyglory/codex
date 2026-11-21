@@ -14,8 +14,9 @@ Scenario: Live and direct Guardian review of a patch; direct approval leaves the
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Change guardian-direct.txt from before to after.
 
@@ -97,8 +98,9 @@ Scenario: Live and direct Guardian review of a patch; direct approval leaves the
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Change guardian-direct.txt from before to after.
 04:custom_tool_call/apply_patch:*** Begin Patch

@@ -649,9 +649,35 @@ async fn guardian_affinity_requires_the_captured_parent_and_stays_out_of_metadat
                 },
             ))));
         let step = StepContext::for_test(Arc::new(turn));
-        let metadata = session
+        let mut metadata = session
             .responses_metadata(&step, CodexResponsesRequestKind::Turn)
             .await;
+        let provider_projection = (
+            metadata.turn_metadata_json(),
+            metadata.client_metadata(/*include_internal*/ true),
+            metadata.client_metadata(/*include_internal*/ false),
+            metadata.compatibility_headers(),
+            format!("{metadata:?}"),
+        );
+        let request_store = Arc::new(codex_extension_api::ExtensionData::new(
+            "private-retry-context",
+        ));
+        request_store.insert("private-retry-state".to_owned());
+        metadata.request_store = Some(Arc::clone(&request_store));
+        assert_eq!(
+            provider_projection,
+            (
+                metadata.turn_metadata_json(),
+                metadata.client_metadata(/*include_internal*/ true),
+                metadata.client_metadata(/*include_internal*/ false),
+                metadata.compatibility_headers(),
+                format!("{metadata:?}"),
+            )
+        );
+        assert!(Arc::ptr_eq(
+            metadata.clone().request_store.as_ref().unwrap(),
+            &request_store
+        ));
         assert_eq!(
             metadata
                 .parent_routing_affinity

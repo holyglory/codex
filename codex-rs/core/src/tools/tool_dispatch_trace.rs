@@ -19,6 +19,7 @@ use codex_rollout_trace::ToolDispatchTraceContext;
 /// Keeps registry early-return paths paired with trace end events.
 pub(crate) struct ToolDispatchTrace {
     context: ToolDispatchTraceContext,
+    usage: Option<crate::usage_capture::Operation>,
 }
 
 impl ToolDispatchTrace {
@@ -28,7 +29,10 @@ impl ToolDispatchTrace {
             .services
             .rollout_thread_trace
             .start_tool_dispatch_trace(|| tool_dispatch_invocation(invocation));
-        Self { context }
+        Self {
+            context,
+            usage: crate::usage_capture::Operation::tool(invocation),
+        }
     }
 
     pub(crate) fn record_completed(
@@ -38,6 +42,12 @@ impl ToolDispatchTrace {
         payload: &ToolPayload,
         result: &dyn ToolOutput,
     ) {
+        if let Some(usage) = &self.usage {
+            // An Ok dispatch has a terminal result even when its model-visible
+            // wrapper marks the content unsuccessful; handler errors use
+            // record_failed and retain the failure outcome.
+            usage.finish(codex_usage::UsageOutcome::Completed);
+        }
         if !self.context.is_enabled() {
             return;
         }
@@ -55,6 +65,16 @@ impl ToolDispatchTrace {
     }
 
     pub(crate) fn record_failed(&self, error: &FunctionCallError) {
+        if let Some(usage) = &self.usage {
+            usage.finish(codex_usage::UsageOutcome::Failed);
+        }
+        self.context.record_failed(error);
+    }
+
+    pub(crate) fn record_blocked(&self, error: &FunctionCallError) {
+        if let Some(usage) = &self.usage {
+            usage.finish(codex_usage::UsageOutcome::Blocked);
+        }
         self.context.record_failed(error);
     }
 }

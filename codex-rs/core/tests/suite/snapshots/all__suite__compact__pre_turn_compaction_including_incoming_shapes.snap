@@ -14,8 +14,9 @@ Scenario: Pre-turn auto-compaction uses the prior context without the incoming u
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     USER_ONE
 -- request 2 (turn) --
@@ -34,8 +35,9 @@ Scenario: Pre-turn auto-compaction uses the prior context without the incoming u
         Deferred tool namespaces:
         - multi_agent_v1: Tools for spawning and managing sub-agents.
         </tools>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     USER_ONE
 04:message/assistant:

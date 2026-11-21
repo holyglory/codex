@@ -269,6 +269,24 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
         let started = Instant::now();
         let (diagnostics, mut states) = mpsc::channel(/*buffer*/ 32);
         let negotiation = timeout(Duration::from_secs(/*secs*/ 30), async {
+            let host = VoiceHost::connect(&package, &commit).await?;
+            let (host, offer) = host.start_transport().await?;
+            let offer = RTCSessionDescription::offer(offer.into_sdp())?;
+            // Match production candidate policy while keeping this synthetic
+            // peer independent of unrelated bridges on a many-interface host.
+            let local_ip = offer
+                .sdp
+                .lines()
+                .filter_map(|line| line.strip_prefix("a=candidate:"))
+                .filter_map(|candidate| rtc::ice::candidate::unmarshal_candidate(candidate).ok())
+                .find_map(|candidate| {
+                    candidate
+                        .address()
+                        .parse::<std::net::Ipv4Addr>()
+                        .ok()
+                        .filter(|ip| !ip.is_loopback() && !ip.is_unspecified())
+                })
+                .context("production offer must advertise a usable IPv4 interface")?;
             let (sender, mut channels) = mpsc::channel(/*buffer*/ 1);
             let gathered = Arc::new(Notify::new());
             let mut settings = SettingEngine::default();
@@ -285,28 +303,41 @@ async fn installed_client_negotiates_and_closes_over_udp_and_tcp() -> Result<()>
                     started,
                 }));
             let remote = if tcp {
-                builder.with_tcp_addrs(vec!["0.0.0.0:0"])
+                builder.with_tcp_addrs(vec![format!("{local_ip}:0")])
             } else {
-                builder.with_udp_addrs(vec!["0.0.0.0:0"])
+                builder.with_udp_addrs(vec![format!("{local_ip}:0")])
             }
             .build()
             .await?;
             let result: Result<()> = async {
-                let host = VoiceHost::connect(&package, &commit).await?;
-                let (host, offer) = host.start_transport().await?;
-                remote
-                    .set_remote_description(RTCSessionDescription::offer(offer.into_sdp())?)
-                    .await?;
+                remote.set_remote_description(offer).await?;
                 let answer = remote.create_answer(/*options*/ None).await?;
                 remote.set_local_description(answer).await?;
                 gathered.notified().await;
                 let answer = remote.local_description().await.context("local answer")?;
+                let candidates: Vec<_> = answer
+                    .sdp
+                    .lines()
+                    .filter(|line| line.starts_with("a=candidate:"))
+                    .collect();
+                let candidate_count = candidates.len();
+                anyhow::ensure!(
+                    candidate_count > 0 && candidate_count <= 32,
+                    "tcp={tcp}: synthetic answer has {candidate_count} candidate occurrences; expected 1..=32"
+                );
+                let candidate_ip = format!(" {local_ip} ");
+                anyhow::ensure!(
+                    candidates.iter().all(|candidate| candidate.contains(&candidate_ip)),
+                    "tcp={tcp}: synthetic answer candidates must use the selected offered interface"
+                );
                 let host = host
                     .apply_answer(
                         SessionDescription::try_from(answer.sdp).map_err(anyhow::Error::msg)?,
                     )
                     .await
-                    .with_context(|| format!("tcp={tcp}: apply voice answer"))?;
+                    .with_context(|| {
+                        format!("tcp={tcp}: apply voice answer with {candidate_count} candidate occurrences")
+                    })?;
                 let channel = channels.recv().await.context("event channel")?;
                 assert_eq!(
                     (channel.label().await?, channel.ordered().await?),

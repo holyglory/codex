@@ -82,6 +82,10 @@ pub(super) async fn maybe_start(
         return;
     }
 
+    let Ok(model_client) = turn_context.model_client(sess) else {
+        return;
+    };
+    let current_auth_owner = model_client.auth_owner();
     let base_instructions = sess.get_prompt_base_instructions().await;
     let (prepared_input, tasks, shutdown_cancellation, launch, send) = {
         let mut state = sess.state.lock().await;
@@ -97,7 +101,7 @@ pub(super) async fn maybe_start(
             || state.shutting_down
             || state.async_compaction.last_attempt.as_ref() == Some(&attempt)
             || state.history.annotated_items().is_empty()
-            || sess.services.model_client.auth_owner() != auth_owner
+            || current_auth_owner != auth_owner
         {
             return;
         }
@@ -159,6 +163,7 @@ pub(super) async fn take_ready(
     if !enabled(turn_context) {
         return None;
     }
+    let current_auth_owner = turn_context.model_client(sess).ok()?.auth_owner();
     let mut state = sess.state.lock().await;
     let mut result = state.async_compaction.result.take()?;
     let candidate = match result.try_recv() {
@@ -170,7 +175,9 @@ pub(super) async fn take_ready(
         // try_recv consumes a closed receiver; awaiting it later would panic.
         Err(oneshot::error::TryRecvError::Closed) => return None,
     };
-    (candidate.prefix.generation == state.history.history_version()).then_some(candidate)
+    (candidate.prefix.generation == state.history.history_version()
+        && candidate.prefix.auth_owner == current_auth_owner)
+        .then_some(candidate)
 }
 
 pub(crate) async fn wait_for_pending(
@@ -180,6 +187,7 @@ pub(crate) async fn wait_for_pending(
     if !enabled(&step_context.turn) {
         return None;
     }
+    let current_auth_owner = step_context.turn.model_client(sess).ok()?.auth_owner();
     let result = {
         let mut state = sess.state.lock().await;
         let result = state.async_compaction.result.take()?;
@@ -188,7 +196,7 @@ pub(crate) async fn wait_for_pending(
         if attempt.history_version != state.history.history_version()
             || attempt.model_slug != model.slug
             || attempt.compaction_hash != model.comp_hash
-            || attempt.auth_owner != sess.services.model_client.auth_owner()
+            || attempt.auth_owner != current_auth_owner
         {
             return None;
         }

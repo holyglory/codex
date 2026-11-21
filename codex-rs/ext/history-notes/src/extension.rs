@@ -12,12 +12,15 @@ use codex_extension_api::ExtensionFuture;
 use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
+use codex_extension_api::StepPreparationInput;
 use codex_extension_api::ThreadLifecycleContributor;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolContributor;
 use codex_extension_api::ToolExecutor;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
+use codex_model_provider::ProviderAuthContext;
 use codex_protocol::AgentPath;
 use codex_protocol::openai_models::HistoryToolMessages;
 use codex_protocol::openai_models::NotesToolMessages;
@@ -46,9 +49,9 @@ struct HistoryNotesAgentIdentity {
 impl HistoryNotesExtension {
     fn update_config(&self, thread_store: &ExtensionData, config: &Config) {
         let auth = thread_store
-            .get::<codex_model_provider::ProviderAuthContext>()
+            .get::<ProviderAuthContext>()
             .unwrap_or_else(|| {
-                Arc::new(codex_model_provider::ProviderAuthContext {
+                Arc::new(ProviderAuthContext {
                     credentials: Arc::clone(&self.auth_manager),
                     runtime_auth: None,
                 })
@@ -162,6 +165,14 @@ impl ContextContributor for HistoryNotesExtension {
 }
 
 impl ToolContributor for HistoryNotesExtension {
+    /// Carries the selected turn account into history and notes tool execution.
+    fn prepare_for_step<'a>(&'a self, input: StepPreparationInput<'a>) -> ExtensionFuture<'a, ()> {
+        if let Some(lease) = input.turn_store.get::<AuthManagerLease>() {
+            input.step_store.insert_arc(lease);
+        }
+        Box::pin(async {})
+    }
+
     fn tools(
         &self,
         session_store: &ExtensionData,
@@ -172,6 +183,7 @@ impl ToolContributor for HistoryNotesExtension {
             thread_store,
             /*history_messages*/ None,
             /*notes_messages*/ None,
+            /*auth_lease*/ None,
         )
     }
 
@@ -183,11 +195,13 @@ impl ToolContributor for HistoryNotesExtension {
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         let history_messages = step_store.get::<HistoryToolMessages>();
         let notes_messages = step_store.get::<NotesToolMessages>();
+        let auth_lease = step_store.get::<AuthManagerLease>();
         self.tools_with_messages(
             session_store,
             thread_store,
             history_messages.as_deref(),
             notes_messages.as_deref(),
+            auth_lease.as_deref(),
         )
     }
 }
@@ -199,6 +213,7 @@ impl HistoryNotesExtension {
         thread_store: &ExtensionData,
         history_messages: Option<&HistoryToolMessages>,
         notes_messages: Option<&NotesToolMessages>,
+        auth_lease: Option<&AuthManagerLease>,
     ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         let Some(config) = thread_store.get::<HistoryNotesExtensionConfig>() else {
             return Vec::new();
@@ -206,13 +221,21 @@ impl HistoryNotesExtension {
         let Some(identity) = thread_store.get::<HistoryNotesAgentIdentity>() else {
             return Vec::new();
         };
+        let backend = auth_lease.map_or_else(
+            || config.backend.clone(),
+            |lease| {
+                config
+                    .backend
+                    .with_auth_manager(Arc::clone(lease.auth_manager()))
+            },
+        );
 
         HistoryNotesAction::ALL
             .into_iter()
             .map(|action| {
                 Arc::new(HistoryNotesTool::new(
                     action,
-                    config.backend.clone(),
+                    backend.clone(),
                     session_store.level_id().to_string(),
                     identity.agent_name.clone(),
                     history_messages,

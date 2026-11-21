@@ -226,6 +226,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     }
     let context = create_process_context(use_remote).await?;
     let home = TempDir::new()?;
+    let counters = home.path().join("counters");
+    std::fs::create_dir(&counters)?;
     let cwd = PathUri::from_host_native_path(home.path())?;
     let (shell_path, profile_name) = match shell_name {
         "bash" if automatic_startup => ("/bin/bash", ".bash-env"),
@@ -243,7 +245,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     let wc = profile_path_entry.join("wc");
     codex_utils_cargo_bin::write_executable(
         &wc,
-        "#!/bin/sh\nprintf x >> \"$HOME/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
+        "#!/bin/sh\nprintf x >> \"$HOME/counters/tool-captures\"\nexec /usr/bin/wc \"$@\"\n",
     )?;
     let posix_shell = matches!(shell_name, "sh" | "bash-sh");
     let padding = if !use_remote && !tty && shell_name == "bash" {
@@ -262,7 +264,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
     std::fs::write(
         &profile_path,
         format!(
-            "printf x >> \"$HOME/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
+            "printf x >> \"$HOME/counters/captures\"\nexport PATH=\"$HOME/profile-bin:/usr/bin:/bin\"\nexport PROFILE_ALLOWED=profile\nexport PROFILE_SECRET=secret\nexport PROFILE_DENIED=denied\nprofile_helper() {{ printf helper; }}\nif [ -n \"${{BASH_VERSION-}}\" ]; then\n  shopt -s extglob nocasematch\n  eval 'profile_helper() {{ case $1 in @(foo|bar)*) printf helper ;; *) return 1 ;; esac; }}'\nfi\nset -u\n{shadowed_builtins}{padding}"
         ),
     )?;
     if shell_name == "zsh" && automatic_startup {
@@ -330,6 +332,24 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         runtime_path_entry.display(),
         profile_path_entry.display(),
     );
+    let sandbox = if use_sandbox {
+        let mut sandbox_policy = PermissionProfile::read_only().file_system_sandbox_policy();
+        // Permit only the directory of counters used to prove startup ran once.
+        // Keep the same sandbox for both commands because it is part of the cache key.
+        sandbox_policy.entries.push(FileSystemSandboxEntry::new(
+            PathUri::from_host_native_path(&counters)?.into(),
+            FileSystemAccessMode::Write,
+        ));
+        Some(FileSystemSandboxContext::from_permission_profile(
+            PermissionProfile::from_runtime_permissions(
+                &sandbox_policy,
+                NetworkSandboxPolicy::Enabled,
+            ),
+            cwd.clone(),
+        ))
+    } else {
+        None
+    };
 
     for attempt in 0..2 {
         let started = context
@@ -351,12 +371,7 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
                 tty,
                 pipe_stdin: false,
                 arg0: (shell_name == "bash-sh").then(|| "sh".to_string()),
-                sandbox: (use_sandbox && attempt == 0).then(|| {
-                    FileSystemSandboxContext::from_permission_profile(
-                        PermissionProfile::read_only(),
-                        cwd.clone(),
-                    )
-                }),
+                sandbox: sandbox.clone(),
                 enforce_managed_network: false,
                 managed_network: None,
                 network_proxy: None,
@@ -370,8 +385,8 @@ async fn shell_snapshot_v2_filters_profile_exports_and_stays_in_memory(
         );
     }
 
-    assert_eq!(std::fs::read_to_string(home.path().join("captures"))?, "x");
-    assert!(!std::fs::read(home.path().join("tool-captures"))?.is_empty());
+    assert_eq!(std::fs::read_to_string(counters.join("captures"))?, "x");
+    assert!(!std::fs::read(counters.join("tool-captures"))?.is_empty());
     if let Some(server) = context._server {
         assert!(!server.codex_home().join("shell_snapshots").exists());
     }
@@ -1005,9 +1020,10 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
         CaptureFailure::Exit(code) => format!("exit {code}"),
         CaptureFailure::Cancel | CaptureFailure::Timeout => "wait".to_string(),
     };
+    let capture_trace = "case ${BASH_EXECUTION_STRING-} in *CODEX_SNAPSHOT_SOURCE*) printf capture;; *) printf replay;; esac >> \"$HOME/capture-trace\"\nprintf '|%s\\n' \"$-\" >> \"$HOME/capture-trace\"\n";
     std::fs::write(
         home.path().join(profile_name),
-        format!("printf x >> \"$HOME/captures\"\n{startup_child}{finish}\n"),
+        format!("printf x >> \"$HOME/captures\"\n{capture_trace}{startup_child}{finish}\n"),
     )?;
     let policy = ExecEnvPolicy {
         inherit: ShellEnvironmentPolicyInherit::All,
@@ -1105,7 +1121,9 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
 
     std::fs::write(
         home.path().join(profile_name),
-        "printf x >> \"$HOME/captures\"\nprofile_helper() { printf recovered; }\n",
+        format!(
+            "printf x >> \"$HOME/captures\"\n{capture_trace}profile_helper() {{ printf recovered; }}\n"
+        ),
     )?;
     let (expected_output, expected_captures) = if failures_before_repair == 3 {
         ("original", "xxx")
@@ -1122,7 +1140,12 @@ async fn shell_snapshot_v2_capture_failure_falls_back_and_retries(
     }
     assert_eq!(
         std::fs::read_to_string(home.path().join("captures"))?,
-        expected_captures
+        expected_captures,
+        "capture phases: {}",
+        std::fs::read_to_string(home.path().join("capture-trace"))?
+            .chars()
+            .take(2048)
+            .collect::<String>()
     );
     Ok(())
 }
@@ -1476,8 +1499,14 @@ async fn remote_process_preserves_empty_workspace_roots() -> Result<()> {
             network_proxy: None,
         })
         .await?;
-    let (stdout, _stderr, exit_code, closed) =
-        collect_process_output_from_events(session.process).await?;
+    // Match the remote harness's five-second event delivery bound while the
+    // sandboxed child starts, rejects the read, and closes both output streams.
+    let (stdout, _stderr, exit_code, closed) = collect_process_output_from_events_with_timeout(
+        session.process,
+        Duration::from_secs(/*secs*/ 5),
+    )
+    .await
+    .context("collect empty-workspace sandbox process events after process/start succeeded")?;
 
     assert!(!stdout.contains("excluded"), "unexpected stdout: {stdout}");
     assert_ne!(exit_code, Some(0));
@@ -1548,7 +1577,16 @@ async fn collect_process_output_from_events_with_timeout(
     let mut stderr = String::new();
     let mut exit_code = None;
     loop {
-        match timeout(event_timeout, events.recv()).await?? {
+        let event = timeout(event_timeout, events.recv())
+            .await
+            .with_context(|| {
+                format!(
+                    "process event delivery exceeded {event_timeout:?}; stdout_bytes={}, stderr_bytes={}, exit_code={exit_code:?}",
+                    stdout.len(),
+                    stderr.len(),
+                )
+            })??;
+        match event {
             ExecProcessEvent::Output(chunk) => match chunk.stream {
                 ExecOutputStream::Stdout | ExecOutputStream::Pty => {
                     stdout.push_str(&String::from_utf8_lossy(&chunk.chunk.into_inner()));

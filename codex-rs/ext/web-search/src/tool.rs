@@ -119,6 +119,11 @@ impl WebSearchTool {
         )
         .await
         .map_err(|err| FunctionCallError::RespondToModel(search_error_message(err)))?;
+        if self.provider.info().requires_openai_auth && !setup.has_authentication() {
+            return Err(FunctionCallError::RespondToModel(
+                "authentication is required for web search".to_string(),
+            ));
+        }
         let transport = if setup.redirect_policy == ClientRedirectPolicy::Reject
             || setup
                 .api_provider

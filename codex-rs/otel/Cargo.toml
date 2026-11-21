@@ -72,6 +72,7 @@ rcgen = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
+codex-utils-cargo-bin = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]

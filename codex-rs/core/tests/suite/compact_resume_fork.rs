@@ -136,31 +136,47 @@ fn assert_latest_checkpoint_retains_harness_metadata(
 }
 
 fn extract_summary_user_text(request: &Value, summary_text: &str) -> String {
-    json_message_input_texts(request, "user")
+    history_message_input_texts(request, "user")
         .into_iter()
         .find(|text| text.contains(summary_text))
         .expect("expected summary message")
 }
 
-fn json_message_input_texts(request: &Value, role: &str) -> Vec<String> {
-    request
-        .get("input")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|item| {
-            item.get("type").and_then(Value::as_str) == Some("message")
-                && item.get("role").and_then(Value::as_str) == Some(role)
-        })
-        .filter_map(|item| {
-            item.get("content")
-                .and_then(Value::as_array)
-                .and_then(|content| content.first())
-                .and_then(|entry| entry.get("text"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect()
+// Keep the complete request for the raw prefix checks. History comparisons
+// inspect every text part, and verify runtime attribution separately by kind.
+fn history_message_input_texts(request: &Value, role: &str) -> Vec<String> {
+    let mut texts = Vec::new();
+    let mut boundaries = 0;
+    for item in request["input"].as_array().expect("request input") {
+        if item["type"] != "message" || item["role"] != role {
+            continue;
+        }
+        for (index, part) in item["content"].as_array().into_iter().flatten().enumerate() {
+            let Some(text) = part["text"].as_str() else {
+                continue;
+            };
+            if item["internal_chat_message_metadata_passthrough"]["content_item_kinds"][index]
+                == "usage_work.boundary_prompt"
+                || text.starts_with("<usage_work_boundary>")
+            {
+                assert_eq!(role, "user");
+                assert!(
+                    text.starts_with("<usage_work_boundary>")
+                        && text.ends_with("</usage_work_boundary>")
+                );
+                assert_eq!(text.matches("<usage_work_boundary>").count(), 1);
+                assert!(text.contains("A usage-work attribution boundary is missing."));
+                boundaries += 1;
+            } else {
+                texts.push(text.to_owned());
+            }
+        }
+    }
+    assert!(
+        boundaries <= 1,
+        "one runtime attribution reminder per unbound history prefix"
+    );
+    texts
 }
 
 fn normalize_compact_prompts(requests: &mut [Value]) {
@@ -264,7 +280,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         &fork_arr[..compact_arr.len()]
     );
 
-    let first_request_user_texts = json_message_input_texts(&requests[0], "user");
+    let first_request_user_texts = history_message_input_texts(&requests[0], "user");
     let first_turn_user_index = first_request_user_texts
         .len()
         .checked_sub(1)
@@ -281,14 +297,14 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
     expected_after_compact_user_texts.extend(["hello world".to_string(), summary_after_compact]);
     expected_after_compact_user_texts.push("AFTER_COMPACT".to_string());
     assert_eq!(
-        json_message_input_texts(&requests[2], "user"),
+        history_message_input_texts(&requests[2], "user"),
         expected_after_compact_user_texts
     );
 
     let mut expected_after_resume_user_texts = seeded_user_prefix.to_vec();
     expected_after_resume_user_texts.extend(["hello world".to_string(), summary_after_resume]);
     expected_after_resume_user_texts.push("AFTER_COMPACT".to_string());
-    let after_resume_user_texts = json_message_input_texts(&requests[3], "user");
+    let after_resume_user_texts = history_message_input_texts(&requests[3], "user");
     let (after_resume_last, after_resume_prefix) = after_resume_user_texts
         .split_last()
         .expect("after-resume request missing user messages");
@@ -314,7 +330,7 @@ async fn compact_resume_and_fork_preserve_model_history_view() {
         }
     }
 
-    let after_fork_user_texts = json_message_input_texts(&requests[4], "user");
+    let after_fork_user_texts = history_message_input_texts(&requests[4], "user");
     let mut expected_after_fork_history_prefix = seeded_user_prefix.to_vec();
     expected_after_fork_history_prefix.extend(["hello world".to_string(), summary_after_fork]);
     expected_after_fork_history_prefix.push("AFTER_COMPACT".to_string());
@@ -431,7 +447,7 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
         compact_input_array.as_slice(),
         &resume_input_array[..compact_input_array.len()]
     );
-    let first_request_user_texts = json_message_input_texts(&requests[0], "user");
+    let first_request_user_texts = history_message_input_texts(&requests[0], "user");
     let first_turn_user_index = first_request_user_texts
         .len()
         .checked_sub(1)
@@ -460,7 +476,7 @@ async fn compact_resume_after_second_compaction_preserves_history() -> Result<()
         summary_after_second_compact,
         "AFTER_COMPACT_2".to_string(),
     ]);
-    let final_user_texts = json_message_input_texts(&requests[requests.len() - 1], "user");
+    let final_user_texts = history_message_input_texts(&requests[requests.len() - 1], "user");
     let (final_last, final_prefix) = final_user_texts
         .split_last()
         .expect("after-second-resume request missing user messages");

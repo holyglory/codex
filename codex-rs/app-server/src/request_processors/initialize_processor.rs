@@ -217,6 +217,31 @@ impl InitializeRequestProcessor {
             codex_home,
             platform_family: std::env::consts::FAMILY.to_string(),
             platform_os: std::env::consts::OS.to_string(),
+            multi_account: (self.config.cli_auth_credentials_store_mode
+                != codex_config::types::AuthCredentialsStoreMode::Ephemeral)
+                .then_some(codex_app_server_protocol::MultiAccountCapability {
+                    version: 2,
+                    supports_managed_login: true,
+                    supports_auto_selection: true,
+                    supports_credit_usage: true,
+                }),
+            local_usage_accounting: Some(
+                codex_app_server_protocol::LocalUsageAccountingCapability {
+                    version: 1,
+                    supported_versions: vec![1],
+                    methods: vec![
+                        "localUsage/summary".into(),
+                        "localUsage/repositoryIdentity".into(),
+                        "localUsage/bindingTransition".into(),
+                        "localUsage/bindingStatus".into(),
+                    ],
+                    storage: "usage-v2".into(),
+                    supports_work_context_bindings: true,
+                    supports_workstream_outcomes: true,
+                    supports_token_headlines: true,
+                    snapshot_retention_ms: 5_000,
+                },
+            ),
         };
 
         self.outgoing

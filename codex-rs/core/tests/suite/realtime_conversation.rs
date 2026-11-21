@@ -4915,30 +4915,29 @@ async fn inbound_handoff_request_starts_turn_and_promotes_its_artifact() -> Resu
     .await;
     assert_eq!(session_updated, "sess_inbound");
 
-    let _ = wait_for_event_match(&test.codex, |msg| match msg {
-        EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
-            payload: RealtimeEvent::HandoffRequested(handoff),
-        }) if handoff.handoff_id == "handoff_inbound"
-            && handoff.input_transcript == "text from realtime" =>
-        {
-            Some(())
-        }
-        _ => None,
-    })
-    .await;
-
-    let turn_id = loop {
-        let event = test.codex.next_event().await?;
-        if let EventMsg::TurnStarted(turn_started) = event.msg {
-            break turn_started.turn_id;
-        }
-    };
-    Uuid::parse_str(&turn_id).context("realtime-routed turn ID should be a UUID")?;
-
+    // Routing the handoff starts the turn before the realtime task forwards
+    // its notification. Either producer can reach the event receiver first.
+    let mut handoff_received = false;
+    let mut started_turn = None;
+    let mut completed_turn = None;
     wait_for_event(&test.codex, |event| {
-        matches!(event, EventMsg::TurnComplete(_))
+        match event {
+            EventMsg::RealtimeConversationRealtime(RealtimeConversationRealtimeEvent {
+                payload: RealtimeEvent::HandoffRequested(handoff),
+            }) if handoff.handoff_id == "handoff_inbound"
+                && handoff.input_transcript == "text from realtime" =>
+            {
+                handoff_received = true;
+            }
+            EventMsg::TurnStarted(start) => started_turn = Some(start.turn_id.clone()),
+            EventMsg::TurnComplete(complete) => completed_turn = Some(complete.turn_id.clone()),
+            _ => {}
+        }
+        handoff_received && started_turn.is_some() && started_turn == completed_turn
     })
     .await;
+    let turn_id = started_turn.context("receive the realtime-routed turn")?;
+    Uuid::parse_str(&turn_id).context("realtime-routed turn ID should be a UUID")?;
 
     test.thread_store
         .flush_thread(test.session_configured.thread_id)

@@ -83,6 +83,57 @@ fn version_skew_binaries() -> Result<Option<(PathBuf, PathBuf)>> {
 }
 
 async fn assert_noise_version_skew(app_binary: &Path, executor_binary: &Path) -> Result<()> {
+    let executor_binary = executor_binary
+        .canonicalize()
+        .context("resolve compatibility executor binary")?;
+    let package_root = executor_binary
+        .parent()
+        .and_then(Path::parent)
+        .context("executor binary has no package parent")?;
+    let packaged_path = match std::fs::read(package_root.join("codex-package.json")) {
+        Ok(contents) => {
+            let manifest: Value = serde_json::from_slice(&contents)
+                .context("parse released executor package manifest")?;
+            let entrypoint = manifest["entrypoint"]
+                .as_str()
+                .context("released executor package must declare its entrypoint")?;
+            anyhow::ensure!(
+                package_root.join(entrypoint).canonicalize()? == executor_binary,
+                "released executor must match its package entrypoint"
+            );
+            let declared_dir = |field: &str| -> Result<PathBuf> {
+                let relative = manifest[field]
+                    .as_str()
+                    .with_context(|| format!("released executor package must declare {field}"))?;
+                let directory = package_root.join(relative).canonicalize()?;
+                anyhow::ensure!(
+                    directory.is_dir()
+                        && directory != package_root
+                        && directory.starts_with(package_root),
+                    "released executor {field} must resolve inside its package"
+                );
+                Ok(directory)
+            };
+            let path_dir = declared_dir("pathDir")?;
+            let resources = declared_dir("resourcesDir")?;
+            let bundled_helper = resources.join("bwrap").canonicalize()?;
+            anyhow::ensure!(
+                bundled_helper.starts_with(&resources) && bundled_helper.is_file(),
+                "released executor must contain its bundled bubblewrap resource"
+            );
+            Some(path_dir)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let current_binary = std::env::var_os(CURRENT_CODEX_ENV_VAR)
+                .context("current compatibility binary must be configured")?;
+            anyhow::ensure!(
+                executor_binary == PathBuf::from(current_binary).canonicalize()?,
+                "released executor package manifest is missing"
+            );
+            None
+        }
+        Err(error) => return Err(error).context("read executor package manifest"),
+    };
     let codex_home = TempDir::new()?;
     let workspace = TempDir::new()?;
     let skill_dir = workspace.path().join(".agents/skills/version-skew");
@@ -158,7 +209,13 @@ stream_max_retries = 0
         .mount(&registry)
         .await;
 
-    let mut executor = Command::new(executor_binary)
+    let mut executor_command = Command::new(&executor_binary);
+    if let Some(path_dir) = packaged_path {
+        // Exercise the released package's bundled, digest-verified helpers.
+        // A repository build keeps its normal PATH and Bazel runfile helpers.
+        executor_command.env("PATH", path_dir);
+    }
+    let mut executor = executor_command
         .args([
             "exec-server",
             "--remote",
@@ -302,11 +359,45 @@ stream_max_retries = 0
         notifications.push(serde_json::from_str(&line)?);
     }
 
-    assert_eq!(
-        std::fs::read_to_string(workspace.path().join("version-skew-output.txt"))?,
-        EXPECTED_OUTPUT
-    );
     let requests = model.received_requests().await.context("model requests")?;
+    let command_output = std::fs::read_to_string(workspace.path().join("version-skew-output.txt"))
+        .with_context(|| {
+            let turn_status = match notifications
+                .iter()
+                .rev()
+                .find(|notification| notification["method"] == "turn/completed")
+                .and_then(|notification| notification["params"]["turn"]["status"].as_str())
+            {
+                Some("completed") => "completed",
+                Some("failed") => "failed",
+                Some("interrupted") => "interrupted",
+                Some(_) => "other",
+                None => "absent",
+            };
+            let mut command_result_items = 0;
+            for request in &requests {
+                if request.url.path() != "/v1/responses" {
+                    continue;
+                }
+                let Ok(body) = serde_json::from_slice::<Value>(&request.body) else {
+                    continue;
+                };
+                command_result_items += body["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| {
+                        item["type"] == "function_call_output"
+                            && item["call_id"] == "noise-version-skew-command"
+                    })
+                    .count();
+            }
+            format!(
+                "read expected Noise command output after turn/completed: turn_status={turn_status}, model_requests={}, command_result_items={command_result_items}",
+                requests.len()
+            )
+        })?;
+    assert_eq!(command_output, EXPECTED_OUTPUT);
     let first_request = requests
         .iter()
         .find(|request| request.url.path() == "/v1/responses")

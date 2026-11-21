@@ -502,6 +502,11 @@ async fn cloud_resume_picker_reconciles_admitted_steers() -> Result<()> {
     let rendered_responses = |app: &App| {
         app.transcript_cells
             .iter()
+            .filter(|cell| {
+                let cell = cell.as_any();
+                cell.is::<crate::history_cell::AgentMessageCell>()
+                    || cell.is::<crate::history_cell::AgentMarkdownCell>()
+            })
             .flat_map(|cell| cell.display_lines(/*width*/ 80))
             .map(|line| line.to_string())
             .filter(|line| line.contains("response"))

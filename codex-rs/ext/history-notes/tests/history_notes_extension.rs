@@ -12,18 +12,22 @@ use codex_extension_api::ExtensionRegistryBuilder;
 use codex_extension_api::NoopTurnItemEmitter;
 use codex_extension_api::PromptFragment;
 use codex_extension_api::PromptSlot;
+use codex_extension_api::StepPreparationInput;
 use codex_extension_api::ThreadStartInput;
 use codex_extension_api::ToolCall;
 use codex_extension_api::ToolCallSource;
 use codex_extension_api::ToolExecutor;
 use codex_extension_api::ToolName;
 use codex_extension_api::ToolPayload;
+use codex_features::RuntimeAuthMode;
 use codex_history_notes_extension::install;
 use codex_http_client::DestinationPolicy;
 use codex_http_client::NetworkPolicyController;
 use codex_login::AuthHeaders;
 use codex_login::AuthManager;
+use codex_login::AuthManagerLease;
 use codex_login::CodexAuth;
+use codex_model_provider::ProviderAuthContext;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
@@ -34,6 +38,12 @@ use codex_protocol::openai_models::ToolMessage;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::TruncationPolicy;
+use codex_runtime_agent_instance::AgentHostAuthorization;
+use codex_runtime_agent_instance::RuntimeAuthManager;
+use codex_runtime_agent_instance::RuntimeRegistrationMetadata;
+use codex_runtime_agent_instance::RuntimeRole;
+use core_test_support::runtime_auth::PROBE_SERVER;
+use core_test_support::runtime_auth::run_harness_through_proxy;
 use http::HeaderMap;
 use http::HeaderValue;
 use pretty_assertions::assert_eq;
@@ -421,6 +431,211 @@ async fn installed_extension_exposes_and_invokes_history_notes_tools() -> TestRe
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn history_notes_keep_thread_runtime_auth_and_step_account_leases() -> TestResult {
+    core_test_support::skip_if_no_network!(Ok(()));
+    if std::env::var(PROBE_SERVER).is_ok() {
+        let codex_home = TempDir::new()?;
+        let mut config = ConfigBuilder::default()
+            .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+            .codex_home(codex_home.path().to_path_buf())
+            .build()
+            .await?;
+        config.model_provider.base_url = Some("https://chatgpt.com/backend-api/codex".into());
+        config.token_budget = Some(TokenBudgetConfig {
+            use_history_notes_extension: true,
+            ..TokenBudgetConfig::default()
+        });
+        let controller = NetworkPolicyController::default();
+        config.application_network_policy = controller.policy();
+        assert!(controller.publish(
+            controller.policy().revision(),
+            DestinationPolicy::Unrestricted,
+        ));
+        let auth_for = |account| {
+            AuthManager::from_auth_for_testing(
+                CodexAuth::from_external_chatgpt_tokens(
+                    "e30.e30.c2ln",
+                    account,
+                    Some("enterprise"),
+                )
+                .expect("fake ChatGPT auth should parse"),
+            )
+        };
+        let credentials = auth_for("thread-account");
+        let runtime = Arc::new(RuntimeAuthManager::new(
+            Arc::clone(&credentials),
+            AgentHostAuthorization::InstallationId {
+                installation_id: "00000000-0000-0000-0000-000000000000".parse()?,
+            },
+            RuntimeRegistrationMetadata {
+                harness: Some("codex".into()),
+                harness_version: None,
+                role: RuntimeRole::Orchestrator,
+            },
+            "https://auth.openai.com/agent/register".parse()?,
+        ));
+        for mode in [
+            None,
+            Some(RuntimeAuthMode::DualHeader),
+            Some(RuntimeAuthMode::AssertionOnly),
+        ] {
+            let mut builder = ExtensionRegistryBuilder::<Config>::new();
+            install(
+                &mut builder,
+                AuthManager::from_auth_for_testing(CodexAuth::from_api_key("unrelated-key")),
+            );
+            let registry = builder.build();
+            let session_store = ExtensionData::new("session");
+            let thread_store = ExtensionData::new("thread");
+            let turn_store = ExtensionData::new("turn");
+            thread_store.insert(ProviderAuthContext {
+                credentials: Arc::clone(&credentials),
+                runtime_auth: mode.map(|mode| (Arc::clone(&runtime), mode)),
+            });
+            for contributor in registry.thread_lifecycle_contributors() {
+                contributor
+                    .on_thread_start(ThreadStartInput {
+                        config: &config,
+                        session_source: &SessionSource::Cli,
+                        persistent_thread_state_available: true,
+                        environments: &[],
+                        mcp_resource_client: None,
+                        extension_metrics: None,
+                        session_store: &session_store,
+                        thread_store: &thread_store,
+                    })
+                    .await;
+            }
+            assert_eq!(
+                registry.context_contributors()[0]
+                    .contribute_thread_context(&session_store, &thread_store)
+                    .await
+                    .len(),
+                1
+            );
+            let contributor = &registry.tool_contributors()[0];
+            let mut captured = vec![
+                contributor.tools(&session_store, &thread_store),
+                contributor.tools_for_step(
+                    &session_store,
+                    &thread_store,
+                    &ExtensionData::new("unleased-step"),
+                ),
+            ];
+            // Runtime-owned auth excludes account-profile switching. Its legacy lease
+            // must still retain the thread runtime; ordinary auth can select other owners.
+            for account in ["first-account", "second-account"] {
+                let selected = match mode {
+                    Some(_) => Arc::clone(&credentials),
+                    None => auth_for(account),
+                };
+                turn_store.insert(AuthManagerLease::legacy(selected));
+                let step_store = ExtensionData::new(account);
+                contributor
+                    .prepare_for_step(StepPreparationInput {
+                        turn_id: "turn",
+                        ready_selected_capability_roots: &[],
+                        executor_capability_discovery: None,
+                        executor_capability_discovery_v2: None,
+                        selected_plugins: &Default::default(),
+                        session_store: &session_store,
+                        thread_store: &thread_store,
+                        turn_store: &turn_store,
+                        step_store: &step_store,
+                    })
+                    .await;
+                captured.push(contributor.tools_for_step(
+                    &session_store,
+                    &thread_store,
+                    &step_store,
+                ));
+            }
+            // Invoke only after the next account is selected to check snapshot ownership.
+            for tools in captured {
+                let tool = tools
+                    .iter()
+                    .find(|tool| tool.tool_name() == ToolName::namespaced("notes", "read_file"))
+                    .expect("thread credentials should enable notes.read_file");
+                let call = tool_call(
+                    ToolName::namespaced("notes", "read_file"),
+                    json!({"path": "notes.md"}),
+                );
+                let output = tool.handle(call.clone()).await?;
+                assert_eq!(
+                    serde_json::to_value(output.to_response_item(&call.call_id, &call.payload))?,
+                    json!({"type": "function_call_output", "call_id": call.call_id,
+                        "output": [{"type": "encrypted_content", "encrypted_content": "enc_payload"}]}),
+                );
+            }
+        }
+        return Ok(());
+    }
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/agent/register"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
+            "runtime_agent_instance_id": "runtime-history", "agent_host_id": "host",
+            "actor": {"kind": "chatgpt", "user_id": "user", "account_id": "thread-account"},
+        })))
+        .expect(/*r*/ 1)
+        .mount(&server)
+        .await;
+    for (account, count) in [
+        ("thread-account", 10),
+        ("first-account", 1),
+        ("second-account", 1),
+    ] {
+        Mock::given(method("POST"))
+            .and(path("/backend-api/codex/alpha/notes/v2/read_file"))
+            .and(header("chatgpt-account-id", account))
+            .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(json!({
+                "encrypted_output": "enc_payload",
+            })))
+            .expect(count)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("POST"))
+        .and(path("/backend-api/codex/alpha/notes/v2/thread_hint"))
+        .and(header("chatgpt-account-id", "thread-account"))
+        .respond_with(ResponseTemplate::new(/*s*/ 200).set_body_json(json!({"text": THREAD_HINT})))
+        .expect(/*r*/ 3)
+        .mount(&server)
+        .await;
+    run_harness_through_proxy(
+        &server,
+        "history_notes_keep_thread_runtime_auth_and_step_account_leases",
+        /*realtime_target*/ None,
+    )
+    .await?;
+    let requests = server.received_requests().await.expect("recorded requests");
+    let mut counts = (0, 0, 0);
+    for request in requests
+        .iter()
+        .filter(|request| request.url.path().contains("/alpha/"))
+    {
+        let authorization = request.headers["authorization"].to_str()?;
+        if request.headers.contains_key("x-openai-agent-assertion") {
+            assert_eq!(authorization, "Bearer e30.e30.c2ln");
+            counts.1 += 1;
+        } else if authorization.starts_with("AgentAssertion ") {
+            counts.2 += 1;
+        } else {
+            assert_eq!(authorization, "Bearer e30.e30.c2ln");
+            counts.0 += 1;
+        }
+    }
+    assert_eq!(
+        counts,
+        (5, 5, 5),
+        "ordinary, dual-header, assertion-only requests"
+    );
+    server.verify().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn history_notes_require_an_openai_provider_and_codex_backend_auth() -> TestResult {
     let codex_home = TempDir::new()?;
@@ -434,14 +649,21 @@ async fn history_notes_require_an_openai_provider_and_codex_backend_auth() -> Te
         ..TokenBudgetConfig::default()
     });
 
-    for (provider, auth) in [
+    for (provider, auth, thread_auth) in [
         (
             config.model_provider.clone(),
             CodexAuth::from_api_key("test-api-key"),
+            None,
         ),
         (
             ModelProviderInfo::create_amazon_bedrock_provider(/*aws*/ None),
             CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            None,
+        ),
+        (
+            config.model_provider.clone(),
+            CodexAuth::create_dummy_chatgpt_auth_for_testing(),
+            Some(CodexAuth::from_api_key("thread-api-key")),
         ),
     ] {
         config.model_provider = provider;
@@ -450,6 +672,12 @@ async fn history_notes_require_an_openai_provider_and_codex_backend_auth() -> Te
         let registry = builder.build();
         let session_store = ExtensionData::new("session-123");
         let thread_store = ExtensionData::new("thread-123");
+        if let Some(auth) = thread_auth {
+            thread_store.insert(ProviderAuthContext {
+                credentials: AuthManager::from_auth_for_testing(auth),
+                runtime_auth: None,
+            });
+        }
 
         for contributor in registry.thread_lifecycle_contributors() {
             contributor

@@ -457,7 +457,7 @@ impl Session {
                     break;
                 }
                 let Some(requirements) = session
-                    .on_task_finished(Arc::clone(&ctx_for_finish), task_result)
+                    .on_task_finished(Arc::clone(&ctx_for_finish), &done_clone, task_result)
                     .await
                 else {
                     break;
@@ -722,6 +722,7 @@ impl Session {
     pub(crate) async fn on_task_finished(
         self: &Arc<Self>,
         turn_context: Arc<TurnContext>,
+        task_done: &Arc<Notify>,
         task_result: SessionTaskResult,
     ) -> Option<McpStartupRequirements> {
         let (regular_output, abort_reason, task_error) = match task_result {
@@ -738,10 +739,14 @@ impl Session {
             regular_output.is_some() && turn_context.terminal_error.lock().await.is_none();
         let finishing = CancellationToken::new();
         let finish_recording = finishing.clone().drop_guard();
-        let (turn_state, unadmitted_task, mut pending_input, outcome_handoff) = {
+        let (turn_context, turn_state, unadmitted_task, mut pending_input, outcome_handoff) = {
             let mut active = self.active_turn.lock().await;
             let active_turn = active.as_mut()?;
-            if !Arc::ptr_eq(&active_turn.task.as_ref()?.turn_context, &turn_context) {
+            let task = active_turn.task.as_ref()?;
+            // Account failover replaces the context, while `done` identifies this admission.
+            if !Arc::ptr_eq(&task.done, task_done)
+                || task.turn_context.sub_id != turn_context.sub_id
+            {
                 return None;
             }
             if can_continue {
@@ -756,6 +761,7 @@ impl Session {
             task.handle.detach();
             active_turn.finishing = Some(finishing);
             (
+                Arc::clone(&task.turn_context),
                 Arc::clone(&active_turn.turn_state),
                 (task._agent_execution_guard.is_none() && task.pending_initial_input.is_some())
                     .then_some(task.task),

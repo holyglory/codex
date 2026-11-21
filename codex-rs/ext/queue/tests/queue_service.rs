@@ -1151,9 +1151,26 @@ async fn invalid_head_is_skipped_and_a_live_user_turn_is_accepted() -> anyhow::R
     .await;
     assert!(service.list(thread_id).await?.is_empty());
     let request = response.single_request();
+    let user_texts = request.message_input_texts("user");
+    assert_eq!(
+        user_texts.len(),
+        2,
+        "one attribution boundary precedes the queued turn"
+    );
+    let boundary = &user_texts[0];
+    assert!(
+        boundary
+            .strip_prefix("<usage_work_boundary>\n")
+            .and_then(|text| text.strip_suffix("\n</usage_work_boundary>"))
+            .is_some_and(|text| !text.is_empty()),
+        "the first user fragment must be a complete attribution boundary: {boundary}"
+    );
     assert_eq!(
         vec!["durable follow-up"],
-        request.message_input_texts("user")
+        user_texts[1..]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
     );
     Ok(())
 }

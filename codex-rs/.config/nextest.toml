@@ -6,6 +6,26 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 retries = 1
 
 [[profile.default.overrides]]
+# These fixtures share OAuth callback ports 1455/1457. nextest runs each case
+# in a separate process, so #[serial(login_port)] cannot serialize them.
+# Keep this exact family before broader app-server group overrides.
+filter = '''
+    (package(codex-app-server) & binary(=all) & (
+        test(=suite::v2::account::login_account_chatgpt_start_can_be_cancelled) |
+        test(=suite::v2::account::login_account_chatgpt_uses_oauth_overrides) |
+        test(=suite::v2::account::login_account_chatgpt_redirects_to_hosted_success_page) |
+        test(=suite::v2::account::set_auth_token_cancels_active_chatgpt_login) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_query_param) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_allowlist_query_param) |
+        test(=suite::v2::account_profiles::account_profile_chatgpt_login_can_be_cancelled) |
+        test(=suite::v2::account_system_proxy::browser_login_bootstraps_through_system_proxy)
+    )) |
+    (package(codex-login) & binary(=all) &
+        test(=suite::login_server_e2e::falls_back_to_registered_fallback_port_when_default_port_is_in_use))
+'''
+test-group = 'browser_login_callback_ports'
+
+[[profile.default.overrides]]
 # These cases cold-start a daemon before confirming a second launch with new settings.
 filter = 'package(codex-cli) & binary(daemon_startup) & test(requires_confirmation_to_disable_)'
 slow-timeout = { period = "1m", terminate-after = 2 }
@@ -27,6 +47,47 @@ path = "junit.xml"
 
 [profile.local]
 inherits = "default"
+
+[[profile.local.overrides]]
+# These fixtures share OAuth callback ports 1455/1457. nextest runs each case
+# in a separate process, so #[serial(login_port)] cannot serialize them.
+# Keep this exact family before broader app-server group overrides.
+filter = '''
+    (package(codex-app-server) & binary(=all) & (
+        test(=suite::v2::account::login_account_chatgpt_start_can_be_cancelled) |
+        test(=suite::v2::account::login_account_chatgpt_uses_oauth_overrides) |
+        test(=suite::v2::account::login_account_chatgpt_redirects_to_hosted_success_page) |
+        test(=suite::v2::account::set_auth_token_cancels_active_chatgpt_login) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_query_param) |
+        test(=suite::v2::account::login_account_chatgpt_includes_forced_workspace_allowlist_query_param) |
+        test(=suite::v2::account_profiles::account_profile_chatgpt_login_can_be_cancelled) |
+        test(=suite::v2::account_system_proxy::browser_login_bootstraps_through_system_proxy)
+    )) |
+    (package(codex-login) & binary(=all) &
+        test(=suite::login_server_e2e::falls_back_to_registered_fallback_port_when_default_port_is_in_use))
+'''
+test-group = 'browser_login_callback_ports'
+
+[[profile.local.overrides]]
+# Large local payload/image cases and MCP matrices compete in full-workspace runs.
+# The parallel-tool case measures a 300ms handler pair within a 1600ms turn.
+# Reserve this runner before launch; retain fixture sizes, assertions and deadlines.
+filter = '''
+    package(codex-core) & (
+        test(=client::tool_metadata::tests::message_budget_removes_residual_values_and_markers_when_ordinary_input_fits) |
+        test(=compact::tests::local_compaction_retries_preserve_instructions_and_tool_metadata::metadata_enabled) |
+        test(=image_preparation::tests::detail_policies_apply_the_expected_budgets) |
+        test(=suite::code_mode::code_mode_excludes_mcp_servers_using_their_configured_identity) |
+        test(=suite::code_mode::mcp_code_mode_exclusion_does_not_change_direct_mode_tool_exposure) |
+        test(=suite::compact_remote::remote_compact_v2_charges_retained_images_to_token_budget::default_trims_images) |
+        test(=suite::compact_remote::remote_compact_v2_charges_retained_images_to_token_budget::disabled_preserves_images) |
+        test(=suite::code_mode::code_mode_nested_tool_calls_can_run_in_parallel)
+    )
+'''
+threads-required = "num-test-threads"
+
+[test-groups.browser_login_callback_ports]
+max-threads = 1
 
 [test-groups.app_server_protocol_codegen]
 max-threads = 1
@@ -118,3 +179,41 @@ platform = 'cfg(windows)'
 filter = 'test(suite::resume::) | test(suite::cli_stream::) | test(suite::auth_env::) | test(start_thread_uses_all_default_environments_from_codex_home) | test(connect_stdio_command_initializes_json_rpc_client_on_windows)'
 test-group = 'windows_process_heavy'
 slow-timeout = { period = "45s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+# The release acceptance fixture writes 15M append-only facts and publishes a
+# fresh process recovery receipt; it needs the release-level wall-clock budget.
+filter = 'package(codex-usage) & test(synthetic_scale_acceptance)'
+slow-timeout = { period = "8h", terminate-after = 1 }
+retries = 0
+
+[[profile.local.overrides]]
+# This critical-path assertion requires cancellation to settle within the
+# runtime's 100 ms grace period; keep competing tests outside that interval.
+filter = 'package(codex-core) & binary(=all) & test(=suite::turn_phase_trace::steer_joins_existing_turn_without_extending_sampling::interrupt_enabled)'
+threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This 3000x2000 MCP image crosses synchronous decode/resize work before the
+# next turn completes; competing tests can exhaust its unchanged event wait.
+filter = 'package(codex-core) & binary(=all) & test(=suite::rmcp_client::stdio_image_responses_resize_large_image)'
+threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This sandbox case uses the five-second remote process-event wait. Reserve
+# local runner slots while its child and both output streams close.
+filter = 'package(codex-exec-server) & binary(=exec_process) & test(=remote_process_preserves_empty_workspace_roots)'
+threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This case launches six CLI processes in sequence and approaches its 60s
+# deadline when their startup, resume/fork and shutdown work competes locally.
+filter = 'package(codex-exec) & binary(=all) & test(=suite::daybreak::exec_resumes_and_forks_the_saved_daybreak_choice)'
+threads-required = "num-test-threads"
+
+[[profile.local.overrides]]
+# This fixture verifies hourly retirement, lifetime rollups, restart and resume
+# across repeated publications. Its functional checks exceed the generic 60s
+# ceiling on the shared build volume; query latency has separate scale assertions.
+filter = 'package(codex-usage) & test(=review_retention::tests::work_tests::job_totals_survive_hourly_lifetime_restart_and_resumed_work)'
+slow-timeout = { period = "1m", terminate-after = 3 }

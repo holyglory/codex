@@ -30,7 +30,9 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 codex-config = { workspace = true }
+codex-features = { workspace = true }
 codex-model-provider-info = { workspace = true }
+codex-runtime-agent-instance = { workspace = true }
 core_test_support = { workspace = true }
 insta = { workspace = true }
 pretty_assertions = { workspace = true }

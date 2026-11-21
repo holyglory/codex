@@ -6,15 +6,15 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
 
 ## Window 1
 -- request 1 (turn) --
-00:additional_tools/developer (3; hash=e019c949fc483f83):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (3; hash=d1eca411e5fb07b2):
+        - namespace/functions; hash=87add7a0af2de619
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=ae875a9d734f2fc2
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -30,8 +30,9 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
     <MULTI_AGENT_ROLE>
 04:message/developer:
     <MULTI_AGENT_MODE>
-05:message/user:
-    <ENVIRONMENT_CONTEXT>
+05:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 06:function_call_output/codex_app.send_message_to_thread:Investigate the failing tests; report your findings without changing files.
 07:configuration_update:reasoning={"effort":"low"}
 -- request 2 (turn) --
@@ -46,17 +47,17 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
 12:function_call_output/example.progress:Output exceeded the available model context and was truncated
 13:compaction_trigger
 
-## Window 2 (after request 4: input diverged at item 06)
+## Window 2 (after request 4: input diverged at item 05)
 -- request 5 (turn) --
-00:additional_tools/developer (3; hash=e019c949fc483f83):
-        - namespace/functions; hash=03340277aa23936f
+00:additional_tools/developer (3; hash=d1eca411e5fb07b2):
+        - namespace/functions; hash=87add7a0af2de619
           - custom/exec
           - function/wait
           - function/request_user_input
           - function/request_user_input_async
         - namespace/clock: Tools for reading and waiting on time.; hash=f402e8c5e9b5e317
           - function/sleep
-        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=2c8d6295978dbe63
+        - namespace/collaboration: Tools for spawning and managing sub-agents.; hash=ae875a9d734f2fc2
           - function/followup_task
           - function/interrupt_agent
           - function/list_agents
@@ -79,5 +80,7 @@ Scenario: Retained thread instructions stop emergency tool-output trimming. Comp
 08:message/user:
     <ENVIRONMENT_CONTEXT>
 09:message/user:
+    <USAGE_WORK_BOUNDARY>
+10:message/user:
     What request are you working on?
-10:configuration_update:reasoning={"effort":"low"}
+11:configuration_update:reasoning={"effort":"low"}

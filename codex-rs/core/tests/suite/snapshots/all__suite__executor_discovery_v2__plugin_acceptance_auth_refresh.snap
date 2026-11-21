@@ -12,8 +12,9 @@ Scenario: Two installations of one cloud plugin route MCP calls through their ow
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <PLUGINS_INSTRUCTIONS>
     [03] <SKILLS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Read a note on each computer, then inspect the accepted plugin skill.
 -- request 2 (request) --
@@ -38,8 +39,9 @@ Scenario: Two installations of one cloud plugin route MCP calls through their ow
     [01] <PERMISSIONS_INSTRUCTIONS>
     [02] <PLUGINS_INSTRUCTIONS>
     [03] <SKILLS_INSTRUCTIONS>
-02:message/user:
-    <ENVIRONMENT_CONTEXT>
+02:message/user[2]:
+    [01] <USAGE_WORK_BOUNDARY>
+    [02] <ENVIRONMENT_CONTEXT>
 03:message/user:
     Read a note on each computer, then inspect the accepted plugin skill.
 04:function_call/mcp__74afdff5f493__notes.echo:{"title":"env-a"}

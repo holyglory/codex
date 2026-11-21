@@ -1,0 +1,30 @@
+--- a/build.rs
++++ b/build.rs
+@@ -81,2 +81,27 @@
+         archive.unpack(out_dir).expect("archive");
++
++        // Backport https://github.com/duckdb/duckdb/commit/fccde6aa1932f48dfa6282a916ea2477b57aa44d
++        // libc++ map range insertion compares the iterator with its end sentinel using ==.
++        // The crate ships this header inside duckdb.tar.gz, so patch it after extraction.
++        let thrift_header = Path::new(out_dir).join("duckdb/third_party/thrift/thrift/Thrift.h");
++        let source = std::fs::read_to_string(&thrift_header).expect("bundled Thrift header");
++        let before = "    return (ii_ != n_);\n  }\n";
++        let after = concat!(
++            "    return (ii_ != n_);\n  }\n",
++            "  bool operator==(const TEnumIterator& end) {\n",
++            "    return !(*this != end);\n",
++            "  }\n",
++        );
++        if !source.contains(after) {
++            assert_eq!(
++                source.matches(before).count(),
++                1,
++                "unexpected bundled TEnumIterator",
++            );
++            std::fs::write(
++                &thrift_header,
++                source.replacen(before, after, /*count*/ 1),
++            )
++            .expect("patched bundled Thrift header");
++        }
+     }

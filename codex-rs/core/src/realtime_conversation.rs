@@ -1441,6 +1441,7 @@ pub(crate) async fn handle_start(
 struct PreparedRealtimeConversationStart {
     attachment_control: RealtimeAttachmentControl,
     sideband: Option<codex_protocol::protocol::RealtimeSidebandTransport>,
+    model_client: ModelClient,
     api_provider: ApiProvider,
     http_client_factory: HttpClientFactory,
     realtime_sideband_base_url: Option<String>,
@@ -1477,9 +1478,9 @@ async fn prepare_realtime_start(
         .model_client
         .validate_required_cyber_access_program(/*programs*/ None)?;
     let provider = sess.provider().await;
-    let auth_manager = sess
-        .services
-        .model_client
+    let auth_turn = sess.new_default_turn().await;
+    let model_client = auth_turn.model_client(sess)?;
+    let auth_manager = model_client
         .auth_manager()
         .unwrap_or_else(|| Arc::clone(&sess.services.auth_manager));
     let config = sess.get_config().await;
@@ -1652,6 +1653,7 @@ async fn prepare_realtime_start(
     Ok(PreparedRealtimeConversationStart {
         attachment_control: RealtimeAttachmentControl::default(),
         sideband: None,
+        model_client,
         auth_context,
         api_provider,
         http_client_factory,
@@ -1881,6 +1883,7 @@ async fn handle_start_inner(
     let PreparedRealtimeConversationStart {
         attachment_control,
         sideband,
+        model_client,
         auth_context,
         api_provider,
         http_client_factory,
@@ -1931,7 +1934,7 @@ async fn handle_start_inner(
         codex_response_handoff_channel_prefixes,
         realtime_call_api_provider,
         session_config,
-        model_client: sess.services.model_client.clone(),
+        model_client,
         sdp,
         existing_call_id,
     };

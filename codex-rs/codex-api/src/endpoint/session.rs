@@ -1,6 +1,7 @@
 use crate::auth::SharedAuthProvider;
 use crate::error::ApiError;
 use crate::provider::Provider;
+use crate::telemetry::RequestAttemptGuard;
 use crate::telemetry::run_with_request_telemetry;
 use codex_client::EncodedJsonBody;
 use codex_client::HttpTransport;
@@ -99,12 +100,16 @@ impl<T: HttpTransport> EndpointSession<T> {
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             make_request,
-            |req| {
+            |req, attempt| {
                 let auth = self.auth.clone();
+                let telemetry = self.request_telemetry.clone();
                 let transport = &self.transport;
                 async move {
                     let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.execute(req).await
+                    let guard = RequestAttemptGuard::start(telemetry, attempt);
+                    let result = transport.execute(req).await;
+                    guard.finish();
+                    result
                 }
             },
         )
@@ -140,12 +145,16 @@ impl<T: HttpTransport> EndpointSession<T> {
             self.provider.retry.to_policy(),
             self.request_telemetry.clone(),
             make_request,
-            |req| {
+            |req, attempt| {
                 let auth = self.auth.clone();
+                let telemetry = self.request_telemetry.clone();
                 let transport = &self.transport;
                 async move {
                     let req = auth.apply_auth(req).await.map_err(TransportError::from)?;
-                    transport.stream(req).await
+                    let guard = RequestAttemptGuard::start(telemetry, attempt);
+                    let result = transport.stream(req).await;
+                    guard.finish();
+                    result
                 }
             },
         )
