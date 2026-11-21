@@ -671,10 +671,20 @@ class Producer:
         checks = {
             "v8-x64-poc-cppgc": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-v8-poc", "--run-ignored", "all"],
             "windows-product-regressions": ["--target", "x86_64-pc-windows-msvc", "-p", "codex-code-mode-runtime", "-p", "codex-account-registry", "-p", "codex-account-selection", "-p", "codex-private-storage", "-p", "codex-usage", "-p", "codex-login"],
+            "windows-core-skills-environment-snapshot": [
+                "--target", "x86_64-pc-windows-msvc", "-p", "codex-core", "--test", "all",
+                "--no-tests=fail", "-E",
+                "test(=suite::skills_extension::production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_resume)",
+            ],
+            "windows-core-subagent-environment-snapshot": [
+                "--target", "x86_64-pc-windows-msvc", "-p", "codex-core", "--test", "all",
+                "--no-tests=fail", "-E",
+                "test(=suite::scenarios::subagent_waits_for_its_inherited_environment_configuration)",
+            ],
         }
         for name, arguments in checks.items():
             command = ["just", "test", "--locked", "--test-threads", "4", *arguments]
-            if name == "windows-product-regressions":
+            if name != "v8-x64-poc-cppgc":
                 command[2:2] = ["--config-file", os.environ["CODEX_WINDOWS_NEXTEST_CONFIG_FILE"]]
             self.run(name, command, environment=environment)
 
@@ -803,6 +813,13 @@ class Producer:
             required.update({"v8-arm64-published-pair", "v8-arm64-compile-link", "sdk-arm64-build"})
         required.update({f"{target}-{phase}" for phase in ("build", "assemble", "pe-architecture")})
         names = {check["name"] for check in checks}
+        # Retain new native checks when present without invalidating completed legacy receipts.
+        snapshot_checks = {
+            "windows-core-skills-environment-snapshot",
+            "windows-core-subagent-environment-snapshot",
+        }
+        if target.startswith("x86_64") and names & snapshot_checks:
+            required.update(snapshot_checks)
         if not required.issubset(names):
             raise ValueError(f"Target checkpoint is missing successful checks: {sorted(required - names)}")
         selected = [check for check in checks if check["name"] in required]

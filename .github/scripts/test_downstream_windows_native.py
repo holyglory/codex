@@ -302,8 +302,45 @@ class WindowsNativeHelperTest(unittest.TestCase):
                         [
                             ("v8-x64-poc-cppgc", expected_environment),
                             ("windows-product-regressions", expected_environment),
+                            (
+                                "windows-core-skills-environment-snapshot",
+                                expected_environment,
+                            ),
+                            (
+                                "windows-core-subagent-environment-snapshot",
+                                expected_environment,
+                            ),
                         ],
                     )
+                    for check, case in zip(
+                        run.call_args_list[2:],
+                        (
+                            "suite::skills_extension::production_turn_keeps_rebalanced_catalogs_stable_after_compaction_and_resume",
+                            "suite::scenarios::subagent_waits_for_its_inherited_environment_configuration",
+                        ),
+                        strict=True,
+                    ):
+                        self.assertEqual(
+                            check.args[1],
+                            [
+                                "just",
+                                "test",
+                                "--config-file",
+                                "nextest.toml",
+                                "--locked",
+                                "--test-threads",
+                                "4",
+                                "--target",
+                                target,
+                                "-p",
+                                "codex-core",
+                                "--test",
+                                "all",
+                                "--no-tests=fail",
+                                "-E",
+                                f"test(={case})",
+                            ],
+                        )
                     run.reset_mock()
                     run.side_effect = RuntimeError("build intercepted")
                     with self.assertRaisesRegex(RuntimeError, "build intercepted"):
